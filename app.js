@@ -16,6 +16,20 @@ var express = require('express'),
 
 var app = module.exports = express.createServer();
 
+var allowCrossDomain = function(req, res, next) {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      
+    // intercept OPTIONS method
+    if ('OPTIONS' == req.method) {
+      res.send(200);
+    }
+    else {
+      next();
+    }
+};
+
 
 // Configuration
 
@@ -47,6 +61,7 @@ app.configure(function(){
   app.use(express.methodOverride());
   app.use(express.logger({ format: '\x1b[1m:method\x1b[0m \x1b[33m:url\x1b[0m :response-time ms' }));
   app.use(express.static(__dirname + '/public'));
+  app.use(allowCrossDomain);
 });
 
 models.defineModels(mongoose, function() {
@@ -91,6 +106,10 @@ function ok(res, body) {
   return json_response(res, 200, body);
 }
 
+function created(res, body) {
+  return json_response(res, 201, body);
+}
+
 function bad_request(res, body) {
   return json_response(res, 400, body);
 }
@@ -126,7 +145,7 @@ app.post('/v0.1/auth', function(req, res) {
     return bad_request(res, {error : "Missing Parameters"});
   }
   else {
-    User.findOne({ email:req.body.email }, function(err, u){
+    User.findOne({ email:req.body.email.toLowerCase() }, function(err, u){
       if (err || !u){
         /* no user found */
         return not_found(res);
@@ -150,23 +169,41 @@ app.post('/v0.1/auth', function(req, res) {
 
 // User#create
 app.post('/v0.1/users', function(req, res){
+  console.log("request: " + req);
 
-  var user = new User(req.body.user);
+  if(!req.body.user || !req.body.user.email || !req.body.user.password)
+      return bad_request(res, JSON.stringify({error: "missing username or password"}));
 
-  user.save( function(err){
-    if(err){
-      if (err.errors === undefined) {
-        return bad_request(res, JSON.stringify(['email not unique']));
+  User.findOne({ email: req.body.user.email.toLowerCase() }, function (err, user) {
+    if (err)
+      return bad_request(res, { error: err.errors });
+
+    if (!user) {
+      user = new User(req.body.user);
+      user.save(function (err) {
+        if (err)
+          return bad_request(res, JSON.stringify(err.errors));
+
+        return created(res,  {
+          user_id : user.id,
+          access_token : user.access_token
+        });
+      });
+    }
+    else {
+      if (user.authenticate(req.body.user.password)) {
+        /* user authenticated */
+        return ok(res, {
+          user_id : user.id,
+          access_token : user.access_token,
+        });
       }
-      else {
-        return bad_request(res, JSON.stringify(err.errors));
+      else
+      {
+        /* unauthorized - incorrect password */
+        return unauthorized(res);
       }
     }
-
-    return ok(res,  JSON.stringify({
-      user_id : user.id,
-      access_token : user.access_token,
-      }));
   });
 });
 
@@ -230,7 +267,7 @@ app.put('/v0.1/users/:id', apiAuth, function(req, res) {
 /* CREATE */
 app.post('/v0.1/lists', apiAuth, function(req, res){
   if (req.current_user.can_add_list()) {
-    var list = new List(req.body.list);
+    var list = new List({ title: req.body.title });
     
     list.add_member(req.current_user);
 
@@ -239,7 +276,7 @@ app.post('/v0.1/lists', apiAuth, function(req, res){
         return bad_request(res, JSON.stringify(err.errors));
       }
 
-      return ok(res, JSON.stringify(list));
+      return created(res, list);
     });
   }
   else {
@@ -257,7 +294,7 @@ app.get('/v0.1/lists', apiAuth, function (req, res) {
       return bad_request(res, JSON.stringify(err.errors));
     }
 
-    return ok(res, JSON.stringify(lists));
+    return ok(res, lists);
   });
 });
 
@@ -297,7 +334,7 @@ app.post('/v0.1/lists/:id/invitation', apiAuth, function (req, res) {
 
     list.invite(req.body.email);
 
-    return ok(res, JSON.stringify({ invitation: { email: req.body.email, list_id: list._id } }));
+    return created(res, JSON.stringify({ invitation: { email: req.body.email, list_id: list._id } }));
   });
 });
 
@@ -368,7 +405,7 @@ app.del('/v0.1/lists/:id', apiAuth, function (req, res) {
 
 /* LIST ITEMS */
 app.post('/v0.1/lists/:list_id/items', apiAuth, function (req, res) {
-  if (!req.body.item.text) {
+  if (!req.body.text) {
     return bad_request(res, json_error("No text provided."));
   }
 
@@ -383,21 +420,22 @@ app.post('/v0.1/lists/:list_id/items', apiAuth, function (req, res) {
     if (!list) {
       return not_found(res);
     }
-
-    list.items.push(new ListItem({ text: req.body.item.text }));
+    li = new ListItem({ text: req.body.text,
+                        list_id: list._id });
+    list.items.push(li);
 
     list.save( function (err) {
       if (err) {
         return server_error(res);
       }
 
-      return ok(res, JSON.stringify({ "list.items": list.items }));
+      return created(res, li);
     });
   });
 });
 
 app.put('/v0.1/lists/:list_id/items/:id', apiAuth, function(req, res) {
-  if (!req.body.item.completed) {
+  if (!req.body.completed) {
     return bad_request(res, "Invalid parameters");
   }
 
@@ -421,7 +459,7 @@ app.put('/v0.1/lists/:list_id/items/:id', apiAuth, function(req, res) {
         return server_error(res);
       }
 
-      return ok(res, JSON.stringify(list_item));
+      return ok(res, list_item);
     });
   });
 });

@@ -17,7 +17,8 @@ function defineModels(mongoose, fn) {
 
   ListItem = new Schema({
     text: String,
-    completed: { type: Boolean, default: false }
+    completed: { type: Boolean, default: false },
+    list_id: { type: ObjectId },
   }, { strict: true });
 
 
